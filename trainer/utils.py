@@ -83,3 +83,9 @@ def validate(val_loader, model, criterion, opt):
               .format(top1=top1, top5=top5))
 
     return top1.avg, top5.avg, losses.avg
+
+
+def set_parameter_requires_grad(model, feature_extracting):
+    if feature_extracting:
+        for param in model.parameters():
+            param.requires_grad = False

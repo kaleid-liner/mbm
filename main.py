@@ -15,7 +15,7 @@ from distiller.FSP import FSP
 from datasets.cifar100 import get_cifar100_dataloaders
 import config
 from trainer.train_vanilla import train_vanilla
-from trainer.utils import validate
+from trainer.utils import set_parameter_requires_grad, validate
 
 
 def parse_options():
@@ -36,12 +36,16 @@ def parse_options():
     parser.add_argument('--model', type=str, default='mobilenetv2')
     parser.add_argument('--save_folder', type=str, default='./save/models')
     parser.add_argument('--epochs', type=int, default=240, help='number of training epochs')
+    parser.add_argument('--device', type=int, default=1)
+    parser.add_argument('--feature_extract', dest='feature_extract', action='store_true')
+    parser.set_defaults(feature_extract=False)
     return parser.parse_args()
 
 
 def main():
     opt = parse_options()
         
+    torch.cuda.set_device(opt.device)
     logger = tb_logger.Logger(logdir=opt.tb_path, flush_secs=2)
 
     model_t = mobilenet_v2(pretrained=True)
@@ -77,6 +81,8 @@ def train():
 
     opt = parse_options()
 
+    torch.cuda.set_device(opt.device)
+
     # dataloader
     train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
                                                         num_workers=opt.num_workers,
@@ -84,10 +90,24 @@ def train():
                                                         data_folder=opt.data_folder)
 
     # model
-    model = tv_mobilenet_v2()
+    model = tv_mobilenet_v2(num_classes=1000, pretrained=True)
+    set_parameter_requires_grad(model, feature_extracting=opt.feature_extract)
+    model.classifier = nn.Sequential(
+        nn.Dropout(0.2),
+        nn.Linear(model.last_channel, 100),
+    )
+
+    params_to_update = []
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            params_to_update.append(param)
+            print("\t",name)
+    if not opt.feature_extract:
+        params_to_update = model.parameters()
+    
 
     # optimizer
-    optimizer = optim.SGD(model.parameters(),
+    optimizer = optim.SGD(params_to_update,
                           lr=opt.learning_rate,
                           momentum=opt.momentum,
                           weight_decay=opt.weight_decay)
