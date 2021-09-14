@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch import Tensor
 from torchvision.models.utils import load_state_dict_from_url
-from typing import Callable, Any, Optional, List
+from typing import Callable, Any, Optional, List, OrderedDict
 from torchvision.models import mobilenetv2
 
 from .tree import TreeModule
@@ -166,13 +166,18 @@ class MobileNetV2(nn.Module):
             raise ValueError("inverted_residual_setting should be non-empty "
                              "or a 4-element list, got {}".format(inverted_residual_setting))
 
+        # building layer mapping from torchvision model to multi-branch model
+        layer_mapping = {}
         # building first layer
         input_channel = _make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
         self.conv_first = ConvBNReLU(3, input_channel, stride=2, norm_layer=norm_layer)
+        layer_mapping['conv_first'] = 'features.0'
 
         self.blocks = nn.ModuleList([])
         # building inverted residual blocks
+        bid = 0
+        lid = 1
         for action, (t, c, n, s) in zip(actions, inverted_residual_setting):
             output_channel = _make_divisible(c * width_mult, round_nearest)
             layers = []
@@ -180,10 +185,15 @@ class MobileNetV2(nn.Module):
                 stride = s if i == 0 else 1
                 layers.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
                 input_channel = output_channel
-            self.blocks.append(TreeModule(layers, action))
+            self.blocks.append(TreeModule(layers, action, layer_mapping, 'blocks.{}'.format(bid), 'features', lid))
+            bid += 1
+            lid += n
 
         # building last several layers
         self.conv_last = ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer)
+
+        layer_mapping['conv_last'] = 'features.{}'.format(lid)
+        self.layer_mapping = layer_mapping
 
         # building classifier
         self.classifier = nn.Sequential(
@@ -191,7 +201,21 @@ class MobileNetV2(nn.Module):
             nn.Linear(self.last_channel, num_classes),
         )
 
+        layer_mapping['classifier'] = 'classifier'
+
         self._initialize_weights()
+
+    def load_state_dict(self, state_dict: 'OrderedDict[str, Tensor]', strict: bool, from_tv: bool = True):
+        if from_tv:
+            new_state_dict = {}
+            for prefix, prefix_mapping in self.layer_mapping.items():
+                for key, value in state_dict.items():
+                    if key.startswith(prefix_mapping + '.'):
+                        key = key.replace(prefix_mapping, prefix)
+                        new_state_dict[key] = value
+        else:
+            new_state_dict = state_dict
+        super().load_state_dict(new_state_dict, strict)
 
     def _initialize_weights(self):
         # weight initialization
@@ -240,5 +264,5 @@ def mobilenet_v2(pretrained: bool = False, progress: bool = True, **kwargs: Any)
     if pretrained:
         state_dict = load_state_dict_from_url(model_urls['mobilenet_v2'],
                                               progress=progress)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(state_dict, True)
     return model
