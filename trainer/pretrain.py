@@ -21,6 +21,7 @@ def init(model_s, model_t, init_modules, criterion, train_loader, logger, opt):
                           lr=lr,
                           momentum=opt.momentum,
                           weight_decay=opt.weight_decay)
+    scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [10, 15, 20, 25], 0.2)
 
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -32,24 +33,22 @@ def init(model_s, model_t, init_modules, criterion, train_loader, logger, opt):
         end = time.time()
         for idx, data in enumerate(train_loader):
             if opt.distill in ['crd']:
-                input, target, index, contrast_idx = data
+                input, target, contrast_idx = data
             else:
-                input, target, index = data
+                input, target = data
             data_time.update(time.time() - end)
 
             input = input.float()
             if torch.cuda.is_available():
                 input = input.cuda()
                 target = target.cuda()
-                index = index.cuda()
                 if opt.distill in ['crd']:
                     contrast_idx = contrast_idx.cuda()
 
             # ============= forward ==============
-            preact = (opt.distill == 'abound')
-            feat_s, _ = model_s(input, is_feat=True, preact=preact)
+            feat_s, _ = model_s(input, is_feat=True)
             with torch.no_grad():
-                feat_t, _ = model_t(input, is_feat=True, preact=preact)
+                feat_t, _ = model_t(input, is_feat=True)
                 feat_t = [f.detach() for f in feat_t]
 
             if opt.distill == 'abound':
@@ -76,6 +75,7 @@ def init(model_s, model_t, init_modules, criterion, train_loader, logger, opt):
 
             batch_time.update(time.time() - end)
             end = time.time()
+        scheduler.step()
 
         # end of epoch
         logger.log_value('init_train_loss', losses.avg, epoch)

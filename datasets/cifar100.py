@@ -18,9 +18,9 @@ def get_cifar100_dataloaders(batch_size=128, num_workers=8, is_instance=False, d
     ])
 
     train_set = datasets.CIFAR100(root=data_folder,
-                                    download=True,
-                                    train=True,
-                                    transform=train_transform)
+                                  download=True,
+                                  train=True,
+                                  transform=train_transform)
     train_loader = DataLoader(train_set,
                               batch_size=batch_size,
                               shuffle=True,

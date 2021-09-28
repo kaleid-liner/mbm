@@ -2,11 +2,10 @@ import torch
 from torch import nn
 from torch import Tensor
 from torchvision.models.utils import load_state_dict_from_url
-from typing import Callable, Any, Optional, List, OrderedDict
-from torchvision.models import mobilenetv2
+from typing import Callable, Any, Optional, List
 
-from .tree import TreeModule
-from .layers import ConvBNReLU
+
+__all__ = ['MobileNetV2', 'mobilenet_v2']
 
 
 model_urls = {
@@ -28,6 +27,36 @@ def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> 
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
+
+
+class ConvBNActivation(nn.Sequential):
+    def __init__(
+        self,
+        in_planes: int,
+        out_planes: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        groups: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        activation_layer: Optional[Callable[..., nn.Module]] = None,
+        dilation: int = 1,
+    ) -> None:
+        padding = (kernel_size - 1) // 2 * dilation
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if activation_layer is None:
+            activation_layer = nn.ReLU6
+        super().__init__(
+            nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups,
+                      bias=False),
+            norm_layer(out_planes),
+            activation_layer(inplace=True)
+        )
+        self.out_channels = out_planes
+
+
+# necessary for backwards compatibility
+ConvBNReLU = ConvBNActivation
 
 
 class InvertedResidual(nn.Module):
@@ -61,7 +90,6 @@ class InvertedResidual(nn.Module):
             norm_layer(oup),
         ])
         self.conv = nn.Sequential(*layers)
-        self.in_channels = inp
         self.out_channels = oup
         self._is_cn = stride > 1
 
@@ -80,10 +108,8 @@ class MobileNetV2(nn.Module):
         inverted_residual_setting: Optional[List[List[int]]] = None,
         round_nearest: int = 8,
         block: Optional[Callable[..., nn.Module]] = None,
-        norm_layer: Optional[Callable[..., nn.Module]] = None,
         stem_stride: int = 2,
-        actions = None,
-        is_feat=False
+        norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         """
         MobileNet V2 main class
@@ -121,52 +147,26 @@ class MobileNetV2(nn.Module):
                 [6, 320, 1, 1],
             ]
 
-        if actions is None:
-            actions = [
-                [],
-                [],
-                [],
-                [],
-                [],
-                [],
-                [],
-            ]
-
-        assert(len(inverted_residual_setting) == len(actions))
-
         # only check the first element, assuming user knows t,c,n,s are required
         if len(inverted_residual_setting) == 0 or len(inverted_residual_setting[0]) != 4:
             raise ValueError("inverted_residual_setting should be non-empty "
                              "or a 4-element list, got {}".format(inverted_residual_setting))
 
-        # building layer mapping from torchvision model to multi-branch model
-        layer_mapping = {}
         # building first layer
         input_channel = _make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
-        self.conv_first = ConvBNReLU(3, input_channel, stride=stem_stride, norm_layer=norm_layer)
-        layer_mapping['conv_first'] = 'features.0'
-
-        self.blocks = nn.ModuleList([])
+        features: List[nn.Module] = [ConvBNReLU(3, input_channel, stride=stem_stride, norm_layer=norm_layer)]
         # building inverted residual blocks
-        bid = 0
-        lid = 1
-        for action, (t, c, n, s) in zip(actions, inverted_residual_setting):
+        for t, c, n, s in inverted_residual_setting:
             output_channel = _make_divisible(c * width_mult, round_nearest)
-            layers = []
             for i in range(n):
                 stride = s if i == 0 else 1
-                layers.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
+                features.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
                 input_channel = output_channel
-            self.blocks.append(TreeModule(layers, action, layer_mapping, 'blocks.{}'.format(bid), 'features', lid))
-            bid += 1
-            lid += n
-
         # building last several layers
-        self.conv_last = ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer)
-
-        layer_mapping['conv_last'] = 'features.{}'.format(lid)
-        self.layer_mapping = layer_mapping
+        features.append(ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer))
+        # make it nn.Sequential
+        self.features = nn.Sequential(*features)
 
         # building classifier
         self.classifier = nn.Sequential(
@@ -174,30 +174,6 @@ class MobileNetV2(nn.Module):
             nn.Linear(self.last_channel, num_classes),
         )
 
-        layer_mapping['classifier'] = 'classifier'
-
-    def load_state_dict(self, state_dict: 'OrderedDict[str, Tensor]', strict: bool, load_from: str = 'tv'):
-        if load_from == 'tv':
-            new_state_dict = {}
-            for prefix, prefix_mapping in self.layer_mapping.items():
-                for key, value in state_dict.items():
-                    if key.startswith(prefix_mapping + '.'):
-                        key = key.replace(prefix_mapping, prefix)
-                        new_state_dict[key] = value
-        elif load_from == 'self':
-            new_state_dict = state_dict
-        elif load_from == 'workaround':
-            new_state_dict = {}
-            for key, value in state_dict.items():
-                if key.startswith('blocks'):
-                    layer_id = int(key[20])
-                    layer_id = layer_id + 2
-                    key = key[:20] + str(layer_id) + key[21:]
-                new_state_dict[key] = value
-
-        super().load_state_dict(new_state_dict, strict)
-
-    def _initialize_weights(self):
         # weight initialization
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -211,42 +187,18 @@ class MobileNetV2(nn.Module):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.zeros_(m.bias)
 
-    def get_feat_modules(self):
-        feat_m = nn.ModuleList([])
-        feat_m.append(self.conv_first)
-        feat_m.append(self.blocks)
-        return feat_m
+    def _forward_impl(self, x: Tensor) -> Tensor:
+        # This exists since TorchScript doesn't support inheritance, so the superclass method
+        # (this one) needs to have a name other than `forward` that can be accessed in a subclass
+        x = self.features(x)
+        # Cannot use "squeeze" as batch-size can be 1
+        x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
-    def forward(self, x: Tensor, is_feat=False) -> Tensor:
-        out = self.conv_first(x)
-        f0 = out
-
-        out = self.blocks[0](out)
-        f1 = out
-        out = self.blocks[1](out)
-        f2 = out
-        out = self.blocks[2](out)
-        f3 = out
-        out = self.blocks[3](out)
-        f4 = out
-        out = self.blocks[4](out)
-        f5 = out
-        out = self.blocks[5](out)
-        f6 = out
-        out = self.blocks[6](out)
-        f7 = out
-
-        out = self.conv_last(out)
-
-        out = nn.functional.adaptive_avg_pool2d(out, (1, 1))
-        out = torch.flatten(out, 1)
-        f8 = out
-        out = self.classifier(out)
-
-        if is_feat:
-            return [f0, f1, f2, f3, f4, f5, f6, f7, f8], out
-        else:
-            return out
+    def forward(self, x: Tensor) -> Tensor:
+        return self._forward_impl(x)
 
 
 def mobilenet_v2(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> MobileNetV2:
@@ -262,5 +214,5 @@ def mobilenet_v2(pretrained: bool = False, progress: bool = True, **kwargs: Any)
     if pretrained:
         state_dict = load_state_dict_from_url(model_urls['mobilenet_v2'],
                                               progress=progress)
-        model.load_state_dict(state_dict, False)
+        model.load_state_dict(state_dict)
     return model
