@@ -40,6 +40,7 @@ def parse_options():
     parser.add_argument('--feature_extract', dest='feature_extract', action='store_true')
     parser.add_argument('--ckpt', type=str, default='')
     parser.add_argument('--train_student', dest='train_student', action='store_true')
+    parser.add_argument('--lr_scheduler', type=str, default='multistep')
 
     parser.set_defaults(feature_extract=False)
     parser.set_defaults(train_student=False)
@@ -124,8 +125,10 @@ def train():
                           lr=opt.learning_rate,
                           momentum=opt.momentum,
                           weight_decay=opt.weight_decay)
-    # scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], 0.2)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.2)
+    if opt.lr_scheduler == 'multistep':
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], 0.2)
+    else:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.2)
     criterion = nn.CrossEntropyLoss()
 
     if torch.cuda.is_available():
@@ -151,7 +154,10 @@ def train():
         logger.log_value('train_loss', train_loss, epoch)
 
         test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, opt)
-        scheduler.step(test_loss)
+        if opt.lr_scheduler == 'multistep':
+            scheduler.step()
+        else:
+            scheduler.step(test_loss)
 
         logger.log_value('test_acc', test_acc, epoch)
         logger.log_value('test_acc_top5', test_acc_top5, epoch)

@@ -62,8 +62,12 @@ class TreeModule(nn.Module):
                 branches[branch_id].insert(depth, get_identity_layer(action['args']['node'], in_channels, out_channels))
 
         self.branches = nn.ModuleList([nn.Sequential(*branch) for branch in branches])
+        self.branch_num = len(branches)
                 
     def forward(self, x):
-        branch_outs = [branch(x) for branch in self.branches]
-        out = reduce(iadd, branch_outs) * (1 / len(self.branches))
+        if self.branch_num > 1:
+            branch_outs = [branch(x) for branch in self.branches]
+            out = reduce(iadd, branch_outs) * (1 / len(self.branches))
+        else:
+            out = self.branches[0](x)
         return out
