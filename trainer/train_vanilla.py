@@ -6,7 +6,7 @@ import sys
 from .utils import AverageMeter, accuracy
 
 
-def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
+def train_vanilla(epoch, train_loader, model, criterion, optimizer, options):
     """vanilla training"""
     model.train()
 
@@ -47,7 +47,7 @@ def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
         pass
 
         # print info
-        if idx % opt.print_freq == 0:
+        if idx % options['print_freq'] == 0:
             print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'

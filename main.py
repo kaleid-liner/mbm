@@ -8,12 +8,10 @@ import argparse
 import time
 import os
 
-from models.mobilenetv2 import mobilenet_v2
-from models.tv_mobilenetv2 import mobilenet_v2 as tv_mobilenet_v2
+from models.mobilenetv2 import MobileNetV2
 from trainer.pretrain import init
 from distiller.FSP import FSP
 from datasets.cifar100 import get_cifar100_dataloaders
-import config
 from trainer.train_vanilla import train_vanilla
 from trainer.utils import set_parameter_requires_grad, validate
 
@@ -47,85 +45,63 @@ def parse_options():
     return parser.parse_args()
 
 
-def main():
-    opt = parse_options()
-        
-    torch.cuda.set_device(opt.device)
-    logger = tb_logger.Logger(logdir=opt.tb_path, flush_secs=2)
-
-    model_t = mobilenet_v2(num_classes=100)
-    model_s = mobilenet_v2(actions=config.actions, num_classes=100)
-    if opt.ckpt:
-        state_dict = torch.load(opt.ckpt)
-        model_t.load_state_dict(state_dict['model'], True)
-        model_s.load_state_dict(state_dict['model'], True)
-
-    data = torch.randn(2, 3, 32, 32)
-    model_t.eval()
-    model_s.eval()
-    feat_t, _ = model_t(data, is_feat=True)
-    feat_s, _ = model_s(data, is_feat=True)
-
-    train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
-                                                        num_workers=opt.num_workers,
-                                                        is_instance=False,
-                                                        data_folder=opt.data_folder)
-                                                        
-                                                    
-    if opt.distill == 'fsp':
-        s_shapes = [s.shape for s in feat_s[:-1]]
-        t_shapes = [t.shape for t in feat_t[:-1]]
-        criterion_kd = FSP(s_shapes, t_shapes)
-        # init stage training
-        init_trainable_list = nn.ModuleList([])
-        init_trainable_list.append(model_s.get_feat_modules())
-        init(model_s, model_t, init_trainable_list, criterion_kd, train_loader, logger, opt)
-
-        torch.save({
-            'epoch': opt.init_epochs,
-            'model': model_s.state_dict(),
-        }, os.path.join(opt.save_folder, 'fsp_init_30.pth'))
-        # classification training
-        pass
-
-
-def train():
+def train(options):
     best_acc = 0
 
-    opt = parse_options()
-
-    torch.cuda.set_device(opt.device)
+    torch.cuda.set_device(options['device'])
 
     # dataloader
-    train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
-                                                        num_workers=opt.num_workers,
+    train_loader, val_loader = get_cifar100_dataloaders(batch_size=options['batch_size'],
+                                                        num_workers=options['num_workers'],
                                                         is_instance=False,
-                                                        data_folder=opt.data_folder)
+                                                        data_folder=options['data_folder'])
 
+    inverted_residual_setting = [
+        # t, c, n, s, f
+        [1, 16, 1, 1, 1],
+        [6, 24, 2, 2, 1],
+        [6, 32, 3, 2, 1],
+        [6, 64, 4, 2, 1],
+        [6, 96, 3, 1, 1],
+        [6, 160, 3, 1, 1],
+        [6, 320, 1, 1, 1],
+    ]
+    model_t = MobileNetV2(num_classes=100, inverted_residual_setting=inverted_residual_setting, stem_stride=1)
+    if options['ckpt']:
+        state_dict = torch.load(options['ckpt'])
+        model_t.load_state_dict(state_dict['model'])
     # model
-    if opt.train_student:
-        model = mobilenet_v2(actions=config.actions, num_classes=100, stem_stride=1)
-        if opt.ckpt:
-            state_dict = torch.load(opt.ckpt)
-            model.load_state_dict(state_dict['model'], False, 'tv')
+    if options['train_student']:
+        inverted_residual_setting = [
+            # t, c, n, s, f
+            [1, 16, 1, 1, 1],
+            [6, 24, 2, 2, 2],
+            [6, 32, 3, 2, 2],
+            [6, 64, 4, 2, 2],
+            [6, 96, 3, 1, 2],
+            [6, 160, 3, 1, 2],
+            [6, 320, 1, 1, 1],
+        ]
+        model = MobileNetV2(num_classes=100, inverted_residual_setting=inverted_residual_setting, stem_stride=1)
+        model.copy_weights_from_sequential(model_t)
     else:
-        model = tv_mobilenet_v2(num_classes=100, pretrained=False, stem_stride=1)
+        model = model_t
     
-    set_parameter_requires_grad(model, feature_extracting=opt.feature_extract)
+    set_parameter_requires_grad(model, feature_extracting=options['feature_extract'])
     params_to_update = []
     for name, param in model.named_parameters():
         if param.requires_grad:
             params_to_update.append(param)
             print("\t",name)
-    if not opt.feature_extract:
+    if not options['feature_extract']:
         params_to_update = model.parameters()
 
     # optimizer
     optimizer = optim.SGD(params_to_update,
-                          lr=opt.learning_rate,
-                          momentum=opt.momentum,
-                          weight_decay=opt.weight_decay)
-    if opt.lr_scheduler == 'multistep':
+                          lr=options['learning_rate'],
+                          momentum=options['momentum'],
+                          weight_decay=options['weight_decay'])
+    if options['lr_scheduler'] == 'multistep':
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], 0.2)
     else:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.2)
@@ -136,14 +112,14 @@ def train():
         criterion = criterion.cuda()
 
     # tensorboard
-    logger = tb_logger.Logger(logdir=opt.tb_path, flush_secs=2)
+    logger = tb_logger.Logger(logdir=options['tb_path'], flush_secs=2)
 
     # routine
-    for epoch in range(1, opt.epochs + 1):
+    for epoch in range(1, options['epochs'] + 1):
         print("==> training...")
 
         time1 = time.time()
-        train_acc, train_loss = train_vanilla(epoch, train_loader, model, criterion, optimizer, opt)
+        train_acc, train_loss = train_vanilla(epoch, train_loader, model, criterion, optimizer, options)
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
         for param_group in optimizer.param_groups:
@@ -153,8 +129,8 @@ def train():
         logger.log_value('train_acc', train_acc, epoch)
         logger.log_value('train_loss', train_loss, epoch)
 
-        test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, opt)
-        if opt.lr_scheduler == 'multistep':
+        test_acc, test_acc_top5, test_loss = validate(val_loader, model, criterion, options)
+        if options['lr_scheduler'] == 'multistep':
             scheduler.step()
         else:
             scheduler.step(test_loss)
@@ -172,12 +148,12 @@ def train():
                 'best_acc': best_acc,
                 'optimizer': optimizer.state_dict(),
             }
-            save_file = os.path.join(opt.save_folder, '{}_best.pth'.format(opt.model))
+            save_file = os.path.join(options['save_folder'], '{}_best.pth'.format(options['model']))
             print('saving the best model!')
             torch.save(state, save_file)
 
         # regular saving
-        if epoch % opt.save_freq == 0:
+        if epoch % options['save_freq'] == 0:
             print('==> Saving...')
             state = {
                 'epoch': epoch,
@@ -185,7 +161,7 @@ def train():
                 'accuracy': test_acc,
                 'optimizer': optimizer.state_dict(),
             }
-            save_file = os.path.join(opt.save_folder, 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
+            save_file = os.path.join(options['save_folder'], 'ckpt_epoch_{epoch}.pth'.format(epoch=epoch))
             torch.save(state, save_file)
 
     # This best accuracy is only for printing purpose.
@@ -194,12 +170,14 @@ def train():
 
     # save model
     state = {
-        'opt': opt,
+        'opt': options,
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
     }
-    save_file = os.path.join(opt.save_folder, '{}_last.pth'.format(opt.model))
+    save_file = os.path.join(options['save_folder'], '{}_last.pth'.format(options['model']))
     torch.save(state, save_file)
 
+
 if __name__ == '__main__':
-    train()
+    opt = parse_options()
+    train(vars(opt))
