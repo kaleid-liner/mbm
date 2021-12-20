@@ -79,8 +79,8 @@ class RemoveActor(nn.Module):
     
     @staticmethod
     def random_decision():
-        expand_decision = np.random.randint(0, 2)
-        return expand_decision
+        remove_decision = np.random.randint(0, 2)
+        return remove_decision
 
 
 class InsertActor(nn.Module):

@@ -15,6 +15,8 @@ from datasets.cifar100 import get_cifar100_dataloaders
 from trainer.train_vanilla import train_vanilla
 from trainer.utils import set_parameter_requires_grad, validate
 
+from utils import process_trees_manually
+
 
 def parse_options():
     parser = argparse.ArgumentParser()
@@ -84,6 +86,10 @@ def train(options):
         ]
         model = MobileNetV2(num_classes=100, inverted_residual_setting=inverted_residual_setting, stem_stride=1)
         model.copy_weights_from_sequential(model_t)
+        transformed_trees = process_trees_manually(model.trees)
+        transformed_model = MobileNetV2(num_classes=100, start_trees=transformed_trees, stem_stride=1)
+        transformed_model.copy_weights_from_original(model)
+        model = transformed_model
     else:
         model = model_t
     

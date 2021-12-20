@@ -5,14 +5,15 @@ import torch
 class Tree:
     global_idx = 0
 
-    def __init__(self, parent: Optional['Tree'], children: List['Tree'], node_type: str, params: Dict):
+    def __init__(self, parent: Optional['Tree'], children: List['Tree'], node_type: str, params: Dict, output_channel):
         self.parent = parent
         self.children = children
         self.node_type = node_type
-        self.idx = self.global_idx
-        self.global_idx += 1
+        self.idx = Tree.global_idx
+        Tree.global_idx += 1
         self.state = None
         self.params = params
+        self.output_channel = output_channel
 
     @property
     def is_merge_type(self):
@@ -29,6 +30,32 @@ class Tree:
     @property
     def is_root(self):
         return self.parent is None
+
+    def __eq__(self, rhs):
+        return self.idx == rhs.idx
+
+    def remove(self):
+        self.parent.children.remove(self)
+        self.parent.children.extend(self.children)
+        for child in self.children:
+            child.parent = self.parent
+    
+    def insert(self, tree: 'Tree'):
+        """
+        Insert a node after self
+        """
+        tree.parent = self
+        tree.children = self.children
+        self.children = [tree]
+
+    def get_leaves(self):
+        leaves = []
+        if self.is_leaf:
+            leaves.append(self)
+        else:
+            for child in self.children:
+                leaves.extend(child.get_leaves())
+        return leaves
 
     def get_state(self):
         if self.state is not None:

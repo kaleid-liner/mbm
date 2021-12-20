@@ -97,9 +97,9 @@ class MobileNetV2(nn.Module):
             # building inverted residual blocks
             for t, c, n, s, f in inverted_residual_setting:
                 if f > 1:
-                    root = Tree(None, [], 'copy', {})
+                    root = Tree(None, [], 'copy', {}, input_channel)
                 else:
-                    root = Tree(None, [], None, {})
+                    root = Tree(None, [], None, {}, input_channel)
                 for _ in range(f):
                     output_channel = _make_divisible(c * width_mult, round_nearest)
                     parent = root
@@ -112,11 +112,11 @@ class MobileNetV2(nn.Module):
                             'stride': stride,
                             'expand_ratio': t,
                             'norm_layer': norm_layer,
-                        })
+                        }, output_channel)
                         parent.children.append(tree)
                         parent = tree
                         inp = output_channel
-                    input_channel = output_channel
+                input_channel = output_channel
                 self.trees.append(root)
         else:
             self.trees = start_trees
@@ -125,6 +125,7 @@ class MobileNetV2(nn.Module):
             block = TreeModule(tree)
             self.idx2layer.update(block.idx2layer)
             self.blocks.append(block)
+            input_channel = tree.get_leaves()[0].output_channel
 
         # building last several layers
         self.conv_last = ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer)
@@ -136,18 +137,29 @@ class MobileNetV2(nn.Module):
         )
 
     def copy_weights_from_sequential(self, net: 'MobileNetV2'):
-        copy_weights_from_identical_module(self.conv_first, net.conv_first)
-        copy_weights_from_identical_module(self.conv_last, net.conv_last)
-        copy_weights_from_identical_module(self.classifier, net.classifier)
+        self.conv_first.load_state_dict(net.conv_first.state_dict())
+        self.conv_last.load_state_dict(net.conv_last.state_dict())
+        self.classifier.load_state_dict(net.classifier.state_dict())
 
         for target_root, root in zip(self.trees, net.trees):
             for child in target_root.children:
                 target_cur = child
                 cur = root.children[0]
-                while target_cur != None:
-                    copy_weights_from_identical_module(self.idx2layer[target_cur.idx], net.idx2layer[cur.idx])
+                while True:
+                    self.idx2layer[target_cur.idx].load_state_dict(net.idx2layer[cur.idx].state_dict())
+                    if target_cur.is_leaf:
+                        break
                     target_cur = target_cur.children[0]
                     cur = cur.children[0]
+
+    def copy_weights_from_original(self, net: 'MobileNetV2'):
+        self.conv_first.load_state_dict(net.conv_first.state_dict())
+        self.conv_last.load_state_dict(net.conv_last.state_dict())
+        self.classifier.load_state_dict(net.classifier.state_dict())
+
+        for idx, layer in self.idx2layer.items():
+            if idx in net.idx2layer:
+                layer.load_state_dict(net.idx2layer[idx].state_dict())
 
     def _initialize_weights(self):
         # weight initialization
