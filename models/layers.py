@@ -5,6 +5,16 @@ from torch import Tensor
 from typing import Optional, Callable, List
 
 
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=False)
+
+
+def conv1x1(in_planes, out_planes, stride=1):
+    """1x1 convolution"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
+
 class ConvBNActivation(nn.Sequential):
     def __init__(
         self,
@@ -17,6 +27,7 @@ class ConvBNActivation(nn.Sequential):
         activation_layer: Optional[Callable[..., nn.Module]] = None,
         dilation: int = 1,
         init_as_identity: bool = False,
+        bias: bool = False,
     ) -> None:
         padding = (kernel_size - 1) // 2 * dilation
         self.kernel_size = kernel_size
@@ -24,12 +35,12 @@ class ConvBNActivation(nn.Sequential):
             norm_layer = nn.BatchNorm2d
         if activation_layer is None:
             activation_layer = nn.ReLU6
-        conv = nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups, bias=False) 
+        conv = nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups, bias=bias) 
         if not init_as_identity:
             super().__init__(
                 conv,
                 norm_layer(out_planes),
-                activation_layer(inplace=True)
+                activation_layer(inplace=False)
             )
         else:
             super().__init__(
@@ -75,6 +86,25 @@ class DWConvBNActivation(ConvBNActivation):
         )
 
 
+class MaxPool2d(nn.Module):
+    def __init__(
+        self,
+        inp: int,
+        oup: int,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        stride: int = 1,
+    ):
+        super().__init__()
+        padding = (kernel_size - 1) // 2 * dilation
+
+        self.in_channels = inp
+        self.out_channels = oup
+        self.pool = nn.MaxPool2d(kernel_size, stride, padding, dilation)
+
+    def forward(self, x):
+        return self.pool(x)
+
 class InvertedResidual(nn.Module):
     def __init__(
         self,
@@ -117,6 +147,44 @@ class InvertedResidual(nn.Module):
             return self.conv(x)
 
 
+class ResidualBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1):
+        super().__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=False)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.stride = stride
+        if stride != 1 or inplanes != planes * self.expansion:
+            self.downsample = nn.Sequential(
+                conv1x1(inplanes, planes * self.expansion, stride),
+                nn.BatchNorm2d(planes * self.expansion),
+            )
+        else:
+            self.downsample = None
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
 # necessary for backwards compatibility
 ConvBNReLU = ConvBNActivation
 
@@ -138,5 +206,7 @@ def get_identity_layer(type, in_channels, out_channels):
         return ConvBNActivation(in_channels, out_channels, kernel, init_as_identity=True)
     elif op == 'dwconv':
         return DWConvBNActivation(in_channels, out_channels, kernel, init_as_identity=True)
+    elif op == 'maxpool':
+        return MaxPool2d(in_channels, out_channels, kernel)
     else:
         raise ValueError('Unsupported type: {}'.format(op))

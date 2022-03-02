@@ -1,0 +1,1 @@
+python main.py --learning_rate 0.008 --ckpt /data/workspace/wjiany/pretrained/cifar100_resnet32-84213ce6.pt --tb_path ./save/resnet32/tensorboards/student_2 --train_student --save_folder ./save/resnet32/models/student_2 --lr_scheduler reduce --device 0 --dataset cifar100 --model resnet32

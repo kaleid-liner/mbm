@@ -48,6 +48,11 @@ class Tree:
         tree.children = self.children
         self.children = [tree]
 
+    def insert_before(self, tree: 'Tree'):
+        tree.children = [self]
+        tree.parent = self.parent
+        self.parent = tree
+
     def get_leaves(self):
         leaves = []
         if self.is_leaf:

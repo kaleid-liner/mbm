@@ -1,7 +1,9 @@
+from numpy import block
 from torchinfo import summary
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torchvision.models.mobilenetv2 import mobilenet_v2 as tv_mobilenet_v2
 import tensorboard_logger as tb_logger
 
 import argparse
@@ -9,9 +11,12 @@ import time
 import os
 
 from models.mobilenetv2 import MobileNetV2
+from models.resnet import cifar100_resnet20, cifar100_resnet32
+from models.vgg import cifar100_vgg16_bn
 from trainer.pretrain import init
 from distiller.FSP import FSP
 from datasets.cifar100 import get_cifar100_dataloaders
+from datasets.imagenet import get_imagenet_dataloaders
 from trainer.train_vanilla import train_vanilla
 from trainer.utils import set_parameter_requires_grad, validate
 
@@ -40,10 +45,13 @@ def parse_options():
     parser.add_argument('--feature_extract', dest='feature_extract', action='store_true')
     parser.add_argument('--ckpt', type=str, default='')
     parser.add_argument('--train_student', dest='train_student', action='store_true')
+    parser.add_argument('--parallel', dest='parallel', action='store_true')
     parser.add_argument('--lr_scheduler', type=str, default='multistep')
+    parser.add_argument('--dataset', type=str, default='cifar100')
 
     parser.set_defaults(feature_extract=False)
     parser.set_defaults(train_student=False)
+    parser.set_defaults(parallel=False)
     return parser.parse_args()
 
 
@@ -51,47 +59,171 @@ def train(options):
     best_acc = 0
 
     torch.cuda.set_device(options['device'])
+    torch.autograd.set_detect_anomaly(True)
 
     # dataloader
-    train_loader, val_loader = get_cifar100_dataloaders(batch_size=options['batch_size'],
-                                                        num_workers=options['num_workers'],
-                                                        is_instance=False,
-                                                        data_folder=options['data_folder'])
+    if options['dataset'] == 'cifar100':
+        train_loader, val_loader = get_cifar100_dataloaders(batch_size=options['batch_size'],
+                                                            num_workers=options['num_workers'],
+                                                            is_instance=False,
+                                                            data_folder=options['data_folder'])
 
-    inverted_residual_setting = [
-        # t, c, n, s, f
-        [1, 16, 1, 1, 1],
-        [6, 24, 2, 2, 1],
-        [6, 32, 3, 2, 1],
-        [6, 64, 4, 2, 1],
-        [6, 96, 3, 1, 1],
-        [6, 160, 3, 1, 1],
-        [6, 320, 1, 1, 1],
-    ]
-    model_t = MobileNetV2(num_classes=100, inverted_residual_setting=inverted_residual_setting, stem_stride=1)
-    if options['ckpt']:
-        state_dict = torch.load(options['ckpt'])
-        model_t.load_state_dict(state_dict['model'])
-    # model
-    if options['train_student']:
+        if options['model'] == 'mobilenetv2':
+            inverted_residual_setting = [
+                # t, c, n, s, f
+                [1, 16, 1, 1, 1],
+                [6, 24, 2, 2, 1],
+                [6, 32, 3, 2, 1],
+                [6, 64, 4, 2, 1],
+                [6, 96, 3, 1, 1],
+                [6, 160, 3, 1, 1],
+                [6, 320, 1, 1, 1],
+            ]
+            num_classes = 100
+            stem_stride = 1
+            model_t = MobileNetV2(num_classes=num_classes, inverted_residual_setting=inverted_residual_setting, stem_stride=stem_stride)
+
+            if options['ckpt']:
+                state_dict = torch.load(options['ckpt'])
+                model_t.load_state_dict_from_pretrained(state_dict)
+        elif options['model'] == 'resnet20':
+            block_settings = [
+                # c, n, s, f
+                [16, 3, 1, 1],
+                [32, 3, 2, 1],
+                [64, 3, 2, 1]
+            ]
+            model_t = cifar100_resnet20(block_settings=block_settings)
+
+            if options['ckpt']:
+                state_dict = torch.load(options['ckpt'])
+                model_t.load_state_dict_from_pretrained(state_dict)
+        elif options['model'] == 'resnet32':
+            block_settings = [
+                # c, n, s, f
+                [16, 5, 1, 1],
+                [32, 5, 2, 1],
+                [64, 5, 2, 1]
+            ]
+            model_t = cifar100_resnet32(block_settings=block_settings)
+
+            if options['ckpt']:
+                state_dict = torch.load(options['ckpt'])
+                model_t.load_state_dict_from_pretrained(state_dict, '32')
+        elif options['model'] == 'vgg':
+            block_settings = [
+                # c, n, f
+                [64, 2, 1],
+                [128, 2, 1],
+                [256, 3, 1],
+                [512, 3, 1],
+                [512, 3, 1],
+            ]
+            model_t = cifar100_vgg16_bn(block_settings=block_settings)
+
+            if options['ckpt']:
+                state_dict = torch.load(options['ckpt'])
+                model_t.load_state_dict_from_pretrained(state_dict)
+
+    elif options['dataset'] == 'imagenet':
+        train_loader, val_loader = get_imagenet_dataloaders(data_folder='/data/workspace/wjiany/ILSVRC/Data/CLS-LOC')
+
         inverted_residual_setting = [
             # t, c, n, s, f
             [1, 16, 1, 1, 1],
-            [6, 24, 2, 2, 2],
-            [6, 32, 3, 2, 2],
-            [6, 64, 4, 2, 2],
-            [6, 96, 3, 1, 2],
-            [6, 160, 3, 1, 2],
+            [6, 24, 2, 2, 1],
+            [6, 32, 3, 2, 1],
+            [6, 64, 4, 2, 1],
+            [6, 96, 3, 1, 1],
+            [6, 160, 3, 2, 1],
             [6, 320, 1, 1, 1],
         ]
-        model = MobileNetV2(num_classes=100, inverted_residual_setting=inverted_residual_setting, stem_stride=1)
-        model.copy_weights_from_sequential(model_t)
-        transformed_trees = process_trees_manually(model.trees)
-        transformed_model = MobileNetV2(num_classes=100, start_trees=transformed_trees, stem_stride=1)
-        transformed_model.copy_weights_from_original(model)
-        model = transformed_model
+        num_classes = 1000
+        stem_stride = 2
+        tv_model = tv_mobilenet_v2(True)
+        model_t = MobileNetV2(num_classes=num_classes, inverted_residual_setting=inverted_residual_setting, stem_stride=stem_stride)
+        model_t.load_state_dict_from_pretrained(tv_model.state_dict())
+
+    if options['train_student']:
+        if options['model'] == 'mobilenetv2':
+            if options['dataset'] == 'cifar100':
+                inverted_residual_setting = [
+                    # t, c, n, s, f
+                    [1, 16, 1, 1, 1],
+                    [6, 24, 2, 2, 2],
+                    [6, 32, 3, 2, 2],
+                    [6, 64, 4, 2, 2],
+                    [6, 96, 3, 1, 2],
+                    [6, 160, 3, 1, 2],
+                    [6, 320, 1, 1, 1],
+                ]
+            elif options['dataset'] == 'imagenet':
+                inverted_residual_setting = [
+                    # t, c, n, s, f
+                    [1, 16, 1, 1, 1],
+                    [6, 24, 2, 2, 2],
+                    [6, 32, 3, 2, 2],
+                    [6, 64, 4, 2, 2],
+                    [6, 96, 3, 1, 2],
+                    [6, 160, 3, 2, 2],
+                    [6, 320, 1, 1, 1],
+                ]
+            model = MobileNetV2(num_classes=num_classes, inverted_residual_setting=inverted_residual_setting, stem_stride=stem_stride)
+            model.copy_weights_from_sequential(model_t)
+            transformed_trees = process_trees_manually(model.trees, options['model'])
+            transformed_model = MobileNetV2(num_classes=num_classes, start_trees=transformed_trees, stem_stride=stem_stride)
+            transformed_model.copy_weights_from_original(model)
+            model = transformed_model
+
+        elif options['model'] == 'resnet20':
+            block_settings = [
+                # c, n, s, f
+                [16, 3, 1, 2],
+                [32, 3, 2, 2],
+                [64, 3, 2, 2]
+            ]
+            model = cifar100_resnet20(block_settings=block_settings)
+            model.copy_weights_from_original(model_t)
+            transformed_trees = process_trees_manually(model.trees, options['model'])
+            transformed_model = cifar100_resnet20(start_trees=transformed_trees)
+            transformed_model.copy_weights_from_original(model)
+            model = transformed_model
+        
+        elif options['model'] == 'resnet32':
+            block_settings = [
+                # c, n, s, f
+                [16, 5, 1, 2],
+                [32, 5, 2, 2],
+                [64, 5, 2, 2]
+            ]
+            model = cifar100_resnet32(block_settings=block_settings)
+            model.copy_weights_from_original(model_t)
+            transformed_trees = process_trees_manually(model.trees, options['model'])
+            transformed_model = cifar100_resnet32(start_trees=transformed_trees)
+            transformed_model.copy_weights_from_original(model)
+            model = transformed_model
+
+        elif options['model'] == 'vgg':
+            block_settings = [
+                # c, n, f
+                [64, 2, 2],
+                [128, 2, 2],
+                [256, 3, 2],
+                [512, 3, 2],
+                [512, 3, 2],
+            ]
+            model = cifar100_vgg16_bn(block_settings=block_settings)
+            model.copy_weights_from_original(model_t)
+            transformed_trees = process_trees_manually(model.trees, options['model'])
+            transformed_model = cifar100_vgg16_bn(start_trees=transformed_trees)
+            transformed_model.copy_weights_from_original(model)
+            model = transformed_model
+
     else:
         model = model_t
+
+    if options['parallel']:
+        model = nn.DataParallel(model, device_ids=[0, 1, 2, 3])
     
     set_parameter_requires_grad(model, feature_extracting=options['feature_extract'])
     params_to_update = []
@@ -109,8 +241,10 @@ def train(options):
                           weight_decay=options['weight_decay'])
     if options['lr_scheduler'] == 'multistep':
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [60, 120, 160], 0.2)
-    else:
+    elif options['lr_scheduler'] == 'reduce':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.2)
+    elif options['lr_scheduler'] == 'cosine':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
     criterion = nn.CrossEntropyLoss()
 
     if torch.cuda.is_available():
