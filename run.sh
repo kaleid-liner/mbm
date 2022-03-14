@@ -1,1 +1,2 @@
-python main.py --learning_rate 0.04 --ckpt ./save/models/mobilenetv2_best.pth --tb_path ./save/tensorboards/student_init
+python train_imagenet.py --num_gpu 4 --distill --save_folder ./save/efficientnet --model efficientnet --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC --better_cpu
+python train_imagenet.py --num_gpu 4 --distill --save_folder ./save/efficientnet --model efficientnet --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC

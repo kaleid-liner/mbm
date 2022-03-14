@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, dataset
 import os
 
 
-def get_imagenet_dataloaders(batch_size=128, num_workers=8, is_instance=False, data_folder=''):
+def get_imagenet_dataloaders(batch_size=256, num_workers=8, is_instance=False, data_folder=''):
     """
     imagenet
     """

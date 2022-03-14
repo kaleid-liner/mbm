@@ -28,6 +28,7 @@ import sys
 import torch
 import torch.nn as nn
 from torch import Tensor
+import torchvision.models.shufflenetv2
 
 try:
     from torch.hub import load_state_dict_from_url
@@ -137,24 +138,38 @@ class ShuffleNetV2(nn.Module):
         stages_repeats: List[int],
         stages_out_channels: List[int],
         num_classes: int = 1000,
-        inverted_residual: Callable[..., nn.Module] = InvertedResidual
+        inverted_residual: Callable[..., nn.Module] = InvertedResidual,
+        modified_stages_repeats: List[List[int]] = None,
+        modified_stages_out_channels: List[List[int]] = None,
+        stages_merge_channels: List[List[int]] = None,
     ) -> None:
         super(ShuffleNetV2, self).__init__()
+
+        if modified_stages_repeats is not None:
+            first_stages_repeats, second_stages_repeats = modified_stages_repeats
+            first_stages_out_channels, second_stages_out_channels = modified_stages_out_channels
+        else:
+            first_stages_repeats = second_stages_repeats = stages_repeats
+            first_stages_out_channels = second_stages_out_channels = stages_out_channels
 
         if len(stages_repeats) != 3:
             raise ValueError('expected stages_repeats as list of 3 positive ints')
         if len(stages_out_channels) != 5:
             raise ValueError('expected stages_out_channels as list of 5 positive ints')
-        self._stage_out_channels = stages_out_channels
+
+        if stages_merge_channels is None:
+            stages_merge_channels = [c // 2 for c in stages_out_channels[1:-1]]
 
         input_channels = 3
-        output_channels = self._stage_out_channels[0]
+        output_channels = stages_out_channels[0]
         self.conv1 = nn.Sequential(
             nn.Conv2d(input_channels, output_channels, 3, 1, 1, bias=False),  # NOTE: change stride 2 -> 1 for CIFAR10/100
             nn.BatchNorm2d(output_channels),
             nn.ReLU(inplace=True),
         )
         input_channels = output_channels
+        first_input_channels = input_channels
+        second_input_channels = input_channels
 
         # self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1) NOTE: remove this maxpool layer for CIFAR10/100
 
@@ -162,16 +177,41 @@ class ShuffleNetV2(nn.Module):
         self.stage2: nn.Sequential
         self.stage3: nn.Sequential
         self.stage4: nn.Sequential
+        self.second_stage2: nn.Sequential
+        self.second_stage3: nn.Sequential
+        self.second_stage4: nn.Sequential
+        self.downsamples = nn.ModuleList([])
+        self.second_downsamples = nn.ModuleList([])
         stage_names = ['stage{}'.format(i) for i in [2, 3, 4]]
-        for name, repeats, output_channels in zip(
-                stage_names, stages_repeats, self._stage_out_channels[1:]):
-            seq = [inverted_residual(input_channels, output_channels, 2)]
-            for i in range(repeats - 1):
-                seq.append(inverted_residual(output_channels, output_channels, 1))
+        for (name, repeats, output_channels,
+             first_repeats, first_output_channels, 
+             second_repeats, second_output_channels,
+             merge_channels) in zip(
+                stage_names, stages_repeats, stages_out_channels[1:],
+                first_stages_repeats, first_stages_out_channels[1:],
+                second_stages_repeats, second_stages_out_channels[1:],
+                stages_merge_channels):
+            seq = [inverted_residual(input_channels, first_output_channels, 2)]
+            second_seq = [inverted_residual(input_channels, second_output_channels, 2)]
+            for i in range(first_repeats - 1):
+                seq.append(inverted_residual(first_output_channels, first_output_channels, 1))
+            for i in range(second_repeats - 1):
+                second_seq.append(inverted_residual(second_output_channels, second_output_channels, 1))
             setattr(self, name, nn.Sequential(*seq))
+            setattr(self, 'second_' + name, nn.Sequential(*second_seq))
             input_channels = output_channels
+            first_input_channels = first_output_channels
+            second_input_channels = second_output_channels
+            self.downsamples.append(nn.Sequential(
+                nn.Conv2d(first_input_channels, merge_channels, 1),
+                nn.BatchNorm2d(merge_channels),
+            ))
+            self.second_downsamples.append(nn.Sequential(
+                nn.Conv2d(second_input_channels, input_channels - merge_channels, 1),
+                nn.BatchNorm2d(input_channels - merge_channels),
+            ))
 
-        output_channels = self._stage_out_channels[-1]
+        output_channels = stages_out_channels[-1]
         self.conv5 = nn.Sequential(
             nn.Conv2d(input_channels, output_channels, 1, 1, 0, bias=False),
             nn.BatchNorm2d(output_channels),
@@ -180,13 +220,41 @@ class ShuffleNetV2(nn.Module):
 
         self.fc = nn.Linear(output_channels, num_classes)
 
+    def init_weight(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
     def _forward_impl(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
         x = self.conv1(x)
         # x = self.maxpool(x) NOTE: remove this maxpool layer for CIFAR10/100
-        x = self.stage2(x)
-        x = self.stage3(x)
-        x = self.stage4(x)
+        x1 = self.stage2(x)
+        x1 = self.downsamples[0](x1)
+        x2 = self.second_stage2(x)
+        x2 = self.second_downsamples[0](x2)
+        x = torch.cat([x1, x2], 1)
+
+        x1 = self.stage3(x)
+        x1 = self.downsamples[1](x1)
+        x2 = self.second_stage3(x)
+        x2 = self.second_downsamples[1](x2)
+        x = torch.cat([x1, x2], 1)
+
+        x1 = self.stage4(x)
+        x1 = self.downsamples[2](x1)
+        x2 = self.second_stage4(x)
+        x2 = self.second_downsamples[2](x2)
+        x = torch.cat([x1, x2], 1)
+
         x = self.conv5(x)
         x = x.mean([2, 3])  # globalpool
         x = self.fc(x)
@@ -208,8 +276,7 @@ def _shufflenet_v2(
     model = ShuffleNetV2(stages_repeats=stages_repeats, stages_out_channels=stages_out_channels, ** kwargs)
     if pretrained:
         state_dict = load_state_dict_from_url(model_urls[arch],
-                                              progress=progress,
-                                              model_dir='/data/workspace/wjiany/pretrained')
+                                              progress=progress)
         model.load_state_dict(state_dict)
     return model
 

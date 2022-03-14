@@ -129,8 +129,14 @@ class MobileNetV2(BaseMBModel):
                         inp = output_channel
                 input_channel = output_channel
                 self.trees.append(root)
-                self.downsamples1.append(nn.Conv2d(input_channel, input_channel // 2, 1))
-                self.downsamples2.append(nn.Conv2d(input_channel, input_channel // 2, 1))
+                self.downsamples1.append(nn.Sequential(
+                    nn.Conv2d(input_channel, input_channel // 2, 1),
+                    nn.BatchNorm2d(input_channel // 2),
+                ))
+                self.downsamples2.append(nn.Sequential(
+                    nn.Conv2d(input_channel, input_channel // 2, 1),
+                    nn.BatchNorm2d(input_channel // 2),
+                ))
         else:
             self.trees = start_trees
 
