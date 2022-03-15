@@ -25,7 +25,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 '''
 import sys
-from turtle import width
 import torch
 from torch import nn
 from torch import Tensor
@@ -148,8 +147,7 @@ class MobileNetV2(nn.Module):
         inverted_residual_setting: Optional[List[List[int]]] = None,
         round_nearest: int = 8,
         block: Optional[Callable[..., nn.Module]] = None,
-        norm_layer: Optional[Callable[..., nn.Module]] = None,
-        modified_residual_setting: List[List[List[int]]] = None,
+        norm_layer: Optional[Callable[..., nn.Module]] = None
     ) -> None:
         """
         MobileNet V2 main class
@@ -190,58 +188,21 @@ class MobileNetV2(nn.Module):
             raise ValueError("inverted_residual_setting should be non-empty "
                              "or a 4-element list, got {}".format(inverted_residual_setting))
 
-        if modified_residual_setting is not None:
-            first_setting, second_setting = modified_residual_setting
-        else:
-            first_setting = second_setting = inverted_residual_setting
-
         # building first layer
         input_channel = _make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
-        self.firstconv = ConvBNReLU(3, input_channel, stride=1, norm_layer=norm_layer)  # NOTE: change stride 2 -> 1 for CIFAR10/100
+        features: List[nn.Module] = [ConvBNReLU(3, input_channel, stride=1, norm_layer=norm_layer)]  # NOTE: change stride 2 -> 1 for CIFAR10/100
         # building inverted residual blocks
-        first_input_channel = second_input_channel = input_channel
-        first_stages: List[nn.Module] = []
-        second_stages: List[nn.Module] = []
-        first_conv1x1s: List[nn.Module] = []
-        second_conv1x1s: List[nn.Module] = []
-        for (t, c, n, s), (ft, fc, fn, fs), (st, sc, sn, ss) in zip(inverted_residual_setting, first_setting, second_setting):
+        for t, c, n, s in inverted_residual_setting:
             output_channel = _make_divisible(c * width_mult, round_nearest)
-            first_output_channel = _make_divisible(fc * width_mult, round_nearest)
-            second_output_channel = _make_divisible(sc * width_mult, round_nearest)
-            first_stage: List[nn.Module] = []
-            second_stage: List[nn.Module] = []
-
-            for i in range(fn):
-                stride = fs if i == 0 else 1
-                first_stage.append(block(first_input_channel, first_output_channel, stride, expand_ratio=ft, norm_layer=norm_layer))
-                first_input_channel = first_output_channel
-            first_conv1x1s.append(nn.Sequential(
-                nn.Conv2d(first_output_channel, output_channel // 2, 1),
-                nn.BatchNorm2d(output_channel // 2),
-            ))
-
-            for i in range(sn):
-                stride = ss if i == 0 else 1
-                second_stage.append(block(second_input_channel, second_output_channel, stride, expand_ratio=st, norm_layer=norm_layer))
-                second_input_channel = second_output_channel
-            second_conv1x1s.append(nn.Sequential(
-                nn.Conv2d(second_output_channel, output_channel // 2, 1),
-                nn.BatchNorm2d(output_channel // 2),
-            ))
-
-            input_channel = output_channel
-            first_input_channel = second_input_channel = input_channel
-            first_stages.append(nn.Sequential(*first_stage))
-            second_stages.append(nn.Sequential(*second_stage))
-
+            for i in range(n):
+                stride = s if i == 0 else 1
+                features.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
+                input_channel = output_channel
         # building last several layers
-        self.lastconv = ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer)
+        features.append(ConvBNReLU(input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer))
         # make it nn.Sequential
-        self.first_stages = nn.ModuleList(first_stages)
-        self.second_stages = nn.ModuleList(second_stages)
-        self.first_conv1x1s = nn.ModuleList(first_conv1x1s)
-        self.second_conv1x1s = nn.ModuleList(second_conv1x1s)
+        self.features = nn.Sequential(*features)
 
         # building classifier
         self.classifier = nn.Sequential(
@@ -249,7 +210,6 @@ class MobileNetV2(nn.Module):
             nn.Linear(self.last_channel, num_classes),
         )
 
-    def init_weight(self):
         # weight initialization
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -266,16 +226,7 @@ class MobileNetV2(nn.Module):
     def _forward_impl(self, x: Tensor) -> Tensor:
         # This exists since TorchScript doesn't support inheritance, so the superclass method
         # (this one) needs to have a name other than `forward` that can be accessed in a subclass
-        x = self.firstconv(x)
-
-        for first_stage, second_stage, first_conv1x1, second_conv1x1 in zip(self.first_stages, self.second_stages, self.first_conv1x1s, self.second_conv1x1s):
-            x1 = first_stage(x)
-            x1 = first_conv1x1(x1)
-            x2 = second_stage(x)
-            x2 = second_conv1x1(x2)
-            x = torch.cat([x1, x2], 1)
-
-        x = self.lastconv(x)
+        x = self.features(x)
         # Cannot use "squeeze" as batch-size can be 1
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)

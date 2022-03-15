@@ -3,6 +3,7 @@ from models.shufflenetv2 import cifar100_shufflenetv2_x1_0, cifar100_shufflenetv
 from models.mobilenetv2 import MobileNetV2
 from models.cifar_mobilenetv2 import cifar100_mobilenetv2_x1_0
 from vanilla_models.shufflenet import cifar100_shufflenetv2_x2_0 as vanilla_cifar100_shufflenetv2_x2_0, cifar100_shufflenetv2_x1_5 as vanilla_cifar100_shufflenetv2_x1_5, cifar100_shufflenetv2_x1_0 as vanilla_cifar100_shufflenetv2_x1_0
+from vanilla_models.mobilenetv2 import cifar100_mobilenetv2_x1_0 as vanilla_cifar100_mobilenetv2_x1_0
 from datasets.cifar100 import get_cifar100_dataloaders
 from trainer.train_vanilla import train_vanilla
 from trainer.train_distill import train_distill
@@ -82,7 +83,7 @@ def train(model, options, train_loader, epoch):
             torch.save(state, save_file)
 
 
-model_type = 'shufflenetv2'
+model_type = 'mobilenetv2'
 torch.cuda.set_device(1)
 
 if model_type == 'shufflenetv2':
@@ -122,20 +123,8 @@ if model_type == 'shufflenetv2':
     train(model, options, train_loader, options['train_epoch'])
 
 elif model_type == 'mobilenetv2':
-    inverted_residual_setting = [
-        # t, c, n, s, f
-        [1, 16, 1, 1, 1],
-        [6, 24, 2, 1, 2],
-        [6, 32, 2, 2, 2],
-        [6, 64, 2, 2, 2],
-        [6, 96, 2, 1, 2],
-        [6, 160, 2, 2, 2],
-        [6, 320, 1, 1, 1],
-    ]
-    num_classes = 100
-    stem_stride = 1
-    model = cifar100_mobilenetv2_x1_0()
-    model.init_weight()
+    s_net = cifar100_mobilenetv2_x1_0()
+    t_net = vanilla_cifar100_mobilenetv2_x1_0(pretrained=True)
 
     train_loader, train_loader_1, train_loader_2, val_loader = get_cifar100_dataloaders(data_folder='./data', subset=True)
 
@@ -143,14 +132,13 @@ elif model_type == 'mobilenetv2':
         'learning_rate': 0.1,
         'momentum': 0.9,
         'weight_decay': 5e-4,
-        'lr_scheduler': 'cosine',
+        'lr_scheduler': 'step',
         'init_epoch': 60,
         'train_epoch': 200,
         'print_freq': 100,
         'nesterov': True,
     }
 
-    model.path = -1
     options['model'] = 'mobilenetv2'
     options['tb_path'] = './save/cifar100_mobilenetv2/tensorboards/original'
     options['save_folder'] = './save/cifar100_mobilenetv2/models/original'

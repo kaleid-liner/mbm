@@ -6,11 +6,15 @@ import sys
 from .utils import AverageMeter, accuracy
 
 
-def train_distill(epoch, train_loader, distiller, optimizer, options):
+def train_distill(epoch, train_loader, distiller, optimizer, options, parallel=True):
     """vanilla training"""
     distiller.train()
-    distiller.module.t_net.train()
-    distiller.module.s_net.train()
+    if parallel:
+        distiller.module.t_net.train()
+        distiller.module.s_net.train()
+    else:
+        distiller.t_net.train()
+        distiller.s_net.train()
 
     batch_time = AverageMeter()
     data_time = AverageMeter()
