@@ -83,8 +83,8 @@ def train(model, options, train_loader, epoch):
             torch.save(state, save_file)
 
 
-model_type = 'mobilenetv2'
-torch.cuda.set_device(1)
+model_type = 'shufflenetv2'
+torch.cuda.set_device(0)
 
 if model_type == 'shufflenetv2':
     block_settings = [
@@ -123,8 +123,27 @@ if model_type == 'shufflenetv2':
     train(model, options, train_loader, options['train_epoch'])
 
 elif model_type == 'mobilenetv2':
-    s_net = cifar100_mobilenetv2_x1_0()
-    t_net = vanilla_cifar100_mobilenetv2_x1_0(pretrained=True)
+    modified_residual_setting = [
+        [
+            [1, 16, 1, 1],
+            [6, 16, 2, 2],
+            [6, 24, 3, 2],
+            [6, 40, 4, 2],
+            [6, 64, 3, 1],
+            [6, 112, 3, 1],
+            [6, 240, 1, 1],
+        ],
+        [
+            [1, 16, 1, 1],
+            [6, 16, 2, 2],
+            [6, 24, 3, 2],
+            [6, 40, 4, 2],
+            [6, 64, 3, 1],
+            [6, 112, 3, 1],
+            [6, 240, 1, 1],
+        ],
+    ]
+    model = cifar100_mobilenetv2_x1_0(modified_residual_setting=modified_residual_setting)
 
     train_loader, train_loader_1, train_loader_2, val_loader = get_cifar100_dataloaders(data_folder='./data', subset=True)
 
@@ -132,7 +151,7 @@ elif model_type == 'mobilenetv2':
         'learning_rate': 0.1,
         'momentum': 0.9,
         'weight_decay': 5e-4,
-        'lr_scheduler': 'step',
+        'lr_scheduler': 'cosine',
         'init_epoch': 60,
         'train_epoch': 200,
         'print_freq': 100,
@@ -140,7 +159,7 @@ elif model_type == 'mobilenetv2':
     }
 
     options['model'] = 'mobilenetv2'
-    options['tb_path'] = './save/cifar100_mobilenetv2/tensorboards/original'
-    options['save_folder'] = './save/cifar100_mobilenetv2/models/original'
+    options['tb_path'] = './save/cifar100_mobilenetv2/tensorboards/train_stride_4'
+    options['save_folder'] = './save/cifar100_mobilenetv2/models/train_stride_4'
 
     train(model, options, train_loader, options['train_epoch'])

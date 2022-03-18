@@ -177,11 +177,11 @@ class MobileNetV2(nn.Module):
             inverted_residual_setting = [
                 # t, c, n, s
                 [1, 16, 1, 1],
-                [6, 24, 2, 1],  # NOTE: change stride 2 -> 1 for CIFAR10/100
+                [6, 24, 2, 2],  # NOTE: change stride 2 -> 1 for CIFAR10/100
                 [6, 32, 3, 2],
                 [6, 64, 4, 2],
                 [6, 96, 3, 1],
-                [6, 160, 3, 2],
+                [6, 160, 3, 1],
                 [6, 320, 1, 1],
             ]
 

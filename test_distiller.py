@@ -86,12 +86,15 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
             torch.save(state, save_file)
 
 
-model_type = 'mobilenetv2'
+model_type = 'shufflenetv2'
 torch.cuda.set_device(0)
 
 if model_type == 'shufflenetv2':
     t_net = vanilla_cifar100_shufflenetv2_x2_0(pretrained=True)
-    s_net = vanilla_cifar100_shufflenetv2_x2_0()
+    s_net = cifar100_shufflenetv2_x2_0(
+        modified_stages_repeats=[[2, 5, 2], [4, 8, 4]],
+        modified_stages_out_channels=[[24, 244, 488, 976, 2048], [24, 116, 232, 464, 1024]],
+    )
     d_net = WSLDistiller(t_net, s_net)
 
     train_loader, train_loader_1, train_loader_2, val_loader = get_cifar100_dataloaders(data_folder='./data', subset=True)
@@ -109,32 +112,32 @@ if model_type == 'shufflenetv2':
 
     options['lr_scheduler'] = 'step'
     options['model'] = 'shufflenetv2'
-    options['tb_path'] = './save/cifar100_shufflenet/tensorboards/train_distill'
-    options['save_folder'] = './save/cifar100_shufflenet/models/train_distill'
+    options['tb_path'] = './save/cifar100_shufflenet/tensorboards/train_distill_cpu'
+    options['save_folder'] = './save/cifar100_shufflenet/models/train_distill_cpu'
     train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
 elif model_type == 'mobilenetv2':
     modified_residual_setting = [
         [
             [1, 16, 1, 1],
-            [6, 24, 2, 1],
-            [6, 32, 2, 2],
-            [6, 64, 2, 2],
-            [6, 96, 2, 1],
-            [6, 160, 2, 2],
-            [6, 320, 1, 1],
-        ],
-        [
-            [1, 16, 1, 1],
-            [6, 16, 2, 1],
+            [6, 16, 2, 2],
             [6, 24, 3, 2],
             [6, 40, 4, 2],
             [6, 64, 3, 1],
-            [6, 112, 3, 2],
+            [6, 112, 3, 1],
+            [6, 240, 1, 1],
+        ],
+        [
+            [1, 16, 1, 1],
+            [6, 16, 2, 2],
+            [6, 24, 3, 2],
+            [6, 40, 4, 2],
+            [6, 64, 3, 1],
+            [6, 112, 3, 1],
             [6, 240, 1, 1],
         ],
     ]
-    s_net = cifar100_mobilenetv2_x1_0()
+    s_net = cifar100_mobilenetv2_x1_0(modified_residual_setting=modified_residual_setting)
     t_net = vanilla_cifar100_mobilenetv2_x1_0(pretrained=True)
     d_net = WSLDistiller(t_net, s_net)
 
@@ -151,8 +154,8 @@ elif model_type == 'mobilenetv2':
         'nesterov': True,
     }
 
-    options['lr_scheduler'] = 'step'
+    options['lr_scheduler'] = 'reduce'
     options['model'] = 'mobilenetv2'
-    options['tb_path'] = './save/cifar100_mobilenetv2/tensorboards/train_distill'
-    options['save_folder'] = './save/cifar100_mobilenetv2/models/train_distill'
+    options['tb_path'] = './save/cifar100_mobilenetv2/tensorboards/train_stride'
+    options['save_folder'] = './save/cifar100_mobilenetv2/models/train_stride'
     train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)

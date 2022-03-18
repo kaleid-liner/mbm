@@ -34,6 +34,7 @@ def train_distill(epoch, train_loader, distiller, optimizer, options, parallel=T
         # ===================forward=====================
         output, loss = distiller(input, target)
 
+        loss = torch.mean(loss)
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
         losses.update(loss.item(), input.size(0))
         top1.update(acc1[0], input.size(0))

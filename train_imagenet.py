@@ -1,10 +1,16 @@
 from functools import partial
+from datasets.cifar100 import get_cifar100_dataloaders
 from datasets.imagenet import get_imagenet_dataloaders
 from trainer.train_distill import train_distill
+from trainer.train_vanilla import train_vanilla
 from distiller.wsl_distiller import WSLDistiller
 from trainer.utils import validate
 from models.efficientnet import EfficientNet, MBConvConfig
+from models.imagenet_shufflenetv2 import imagenet_shufflenetv2_x1_0
+from models.resnet import cifar100_resnet56, cifar100_resnet32
+from vanilla_models.resnet import cifar100_resnet32 as vanilla_cifar100_resnet32
 from vanilla_models.efficientnet import efficientnet_b3 as vanilla_efficientnet_b3
+from vanilla_models.imagenet_shufflenetv2 import shufflenet_v2_x1_0
 
 import torch
 import torch.optim as optim
@@ -73,11 +79,15 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
 
     # routine
     best_acc = 0
+    parallel = options['num_gpu'] > 1
     for epoch in range(1, epoch + 1):
         print("==> training...")
 
         time1 = time.time()
-        train_acc, train_loss = train_distill(epoch, train_loader, d_net, optimizer, options)
+        if options['distill']:
+            train_acc, train_loss = train_distill(epoch, train_loader, d_net, optimizer, options, parallel)
+        else:
+            train_acc, train_loss = train_vanilla(epoch, train_loader, s_net, criterion, optimizer, options)
 
         time2 = time.time()
         print('epoch {}, total time {:.2f}'.format(epoch, time2 - time1))
@@ -174,5 +184,37 @@ if __name__ == '__main__':
         d_net = WSLDistiller(t_net, s_net, num_classes=1000)
 
         train_loader, val_loader = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'])
+
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'shufflenetv2':
+        t_net = shufflenet_v2_x1_0(pretrained=True)
+
+        s_net = imagenet_shufflenetv2_x1_0(
+            modified_stages_repeats=[[2, 5, 2], [2, 5, 2]],
+            modified_stages_out_channels=[[24, 116, 232, 464, 1024], [24, 116, 232, 464, 1024]],
+        )
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=1000)
+
+        train_loader, val_loader = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'])
+
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'resnet32':
+        block_settings = [
+            # c, n, s, f
+            [16, 3, 1, 2],
+            [32, 3, 2, 2],
+            [64, 3, 2, 2]
+        ]
+        s_net = cifar100_resnet32(block_settings=block_settings)
+        s_net.path = -1
+
+        t_net = vanilla_cifar100_resnet32(pretrained=True)
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=100)
+
+        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)

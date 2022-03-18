@@ -5,7 +5,7 @@ import torch.nn as nn
 from models.mobilenetv2 import MobileNetV2
 from models.resnet import cifar100_resnet32, cifar100_resnet20
 from models.vgg import cifar100_vgg16_bn
-from models.cifar_mobilenetv2 import cifar100_mobilenetv2_x1_0
+from vanilla_models.mobilenetv2 import cifar100_mobilenetv2_x1_0
 from vanilla_models.vgg import cifar100_vgg16_bn as vanilla_cifar100_vgg16_bn
 from datasets.cifar100 import get_cifar100_dataloaders
 from trainer.utils import validate
