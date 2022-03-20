@@ -149,7 +149,8 @@ class MobileNetV2(nn.Module):
         round_nearest: int = 8,
         block: Optional[Callable[..., nn.Module]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
-        modified_residual_setting: List[List[List[int]]] = None,
+        modified_residual_setting: Optional[List[List[List[int]]]] = None,
+        meeting_point: Optional[List[bool]] = None,
     ) -> None:
         """
         MobileNet V2 main class
@@ -177,11 +178,11 @@ class MobileNetV2(nn.Module):
             inverted_residual_setting = [
                 # t, c, n, s
                 [1, 16, 1, 1],
-                [6, 24, 2, 2],  # NOTE: change stride 2 -> 1 for CIFAR10/100
+                [6, 24, 2, 1],  # NOTE: change stride 2 -> 1 for CIFAR10/100
                 [6, 32, 3, 2],
                 [6, 64, 4, 2],
                 [6, 96, 3, 1],
-                [6, 160, 3, 1],
+                [6, 160, 3, 2],
                 [6, 320, 1, 1],
             ]
 
@@ -205,7 +206,7 @@ class MobileNetV2(nn.Module):
         second_stages: List[nn.Module] = []
         first_conv1x1s: List[nn.Module] = []
         second_conv1x1s: List[nn.Module] = []
-        for (t, c, n, s), (ft, fc, fn, fs), (st, sc, sn, ss) in zip(inverted_residual_setting, first_setting, second_setting):
+        for (t, c, n, s), (ft, fc, fn, fs), (st, sc, sn, ss), mp in zip(inverted_residual_setting, first_setting, second_setting, meeting_point):
             output_channel = _make_divisible(c * width_mult, round_nearest)
             first_output_channel = _make_divisible(fc * width_mult, round_nearest)
             second_output_channel = _make_divisible(sc * width_mult, round_nearest)
@@ -216,22 +217,31 @@ class MobileNetV2(nn.Module):
                 stride = fs if i == 0 else 1
                 first_stage.append(block(first_input_channel, first_output_channel, stride, expand_ratio=ft, norm_layer=norm_layer))
                 first_input_channel = first_output_channel
-            first_conv1x1s.append(nn.Sequential(
-                nn.Conv2d(first_output_channel, output_channel // 2, 1),
-                nn.BatchNorm2d(output_channel // 2),
-            ))
+
+            if mp:
+                first_conv1x1s.append(nn.Sequential(
+                    nn.Conv2d(first_output_channel, output_channel // 2, 1),
+                    nn.BatchNorm2d(output_channel // 2),
+                ))
+            else:
+                first_conv1x1s.append(None)
 
             for i in range(sn):
                 stride = ss if i == 0 else 1
                 second_stage.append(block(second_input_channel, second_output_channel, stride, expand_ratio=st, norm_layer=norm_layer))
                 second_input_channel = second_output_channel
-            second_conv1x1s.append(nn.Sequential(
-                nn.Conv2d(second_output_channel, output_channel // 2, 1),
-                nn.BatchNorm2d(output_channel // 2),
-            ))
+
+            if mp:
+                second_conv1x1s.append(nn.Sequential(
+                    nn.Conv2d(second_output_channel, output_channel // 2, 1),
+                    nn.BatchNorm2d(output_channel // 2),
+                ))
+            else:
+                second_conv1x1s.append(None)
 
             input_channel = output_channel
-            first_input_channel = second_input_channel = input_channel
+            if mp:
+                first_input_channel = second_input_channel = input_channel
             first_stages.append(nn.Sequential(*first_stage))
             second_stages.append(nn.Sequential(*second_stage))
 
@@ -266,14 +276,15 @@ class MobileNetV2(nn.Module):
     def _forward_impl(self, x: Tensor) -> Tensor:
         # This exists since TorchScript doesn't support inheritance, so the superclass method
         # (this one) needs to have a name other than `forward` that can be accessed in a subclass
-        x = self.firstconv(x)
+        x1 = x2 = x = self.firstconv(x)
 
         for first_stage, second_stage, first_conv1x1, second_conv1x1 in zip(self.first_stages, self.second_stages, self.first_conv1x1s, self.second_conv1x1s):
-            x1 = first_stage(x)
-            x1 = first_conv1x1(x1)
-            x2 = second_stage(x)
-            x2 = second_conv1x1(x2)
-            x = torch.cat([x1, x2], 1)
+            x1 = first_stage(x1)
+            x2 = second_stage(x2)
+            if first_conv1x1:
+                x1 = first_conv1x1(x1)
+                x2 = second_conv1x1(x2)
+                x1 = x2 = x = torch.cat([x1, x2], 1)
 
         x = self.lastconv(x)
         # Cannot use "squeeze" as batch-size can be 1

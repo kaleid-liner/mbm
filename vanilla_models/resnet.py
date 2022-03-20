@@ -158,7 +158,8 @@ def _resnet(
     model = CifarResNet(BasicBlock, layers, **kwargs)
     if pretrained:
         state_dict = load_state_dict_from_url(model_urls[arch],
-                                              progress=progress)
+                                              progress=progress,
+                                              model_dir='/data/workspace/wjiany/pretrained')
         model.load_state_dict(state_dict)
     return model
 

@@ -8,9 +8,11 @@ from trainer.utils import validate
 from models.efficientnet import EfficientNet, MBConvConfig
 from models.imagenet_shufflenetv2 import imagenet_shufflenetv2_x1_0
 from models.resnet import cifar100_resnet56, cifar100_resnet32
-from vanilla_models.resnet import cifar100_resnet32 as vanilla_cifar100_resnet32
+from models.cifar_mobilenetv2 import cifar100_mobilenetv2_x1_0
+from vanilla_models.resnet import cifar100_resnet32 as vanilla_cifar100_resnet32, cifar100_resnet56 as vanilla_cifar100_resnet56
 from vanilla_models.efficientnet import efficientnet_b3 as vanilla_efficientnet_b3
 from vanilla_models.imagenet_shufflenetv2 import shufflenet_v2_x1_0
+from vanilla_models.mobilenetv2 import cifar100_mobilenetv2_x1_0 as vanilla_cifar100_mobilenetv2_x1_0
 
 import torch
 import torch.optim as optim
@@ -37,7 +39,9 @@ def parse_options():
     parser.add_argument('--better_cpu', dest='better_cpu', action='store_true')
     parser.add_argument('--distill', dest='distill', action='store_true')
     parser.add_argument('--num_gpu', type=int, default=1)
+    parser.add_argument('--save_freq', type=int, default=30)
     parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--ckpt', type=str, default='')
 
     parser.set_defaults(distill=False)
     parser.set_defaults(better_cpu=False)
@@ -48,6 +52,10 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
     logger = tb_logger.Logger(logdir=options['tb_path'], flush_secs=2)
 
     criterion = nn.CrossEntropyLoss()
+
+    if options['ckpt']:
+        state_dict = torch.load(options['ckpt'])
+        s_net.load_state_dict(state_dict['model'])
 
     if options['num_gpu'] > 1:
         gpus = list(range(options['num_gpu']))
@@ -69,7 +77,7 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
     )
 
     if options['lr_scheduler'] == 'multistep':
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [20, 40, 60], 0.2)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, [60, 70, 80], 0.1)
     elif options['lr_scheduler'] == 'reduce':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=10, factor=0.2)
     elif options['lr_scheduler'] == 'cosine':
@@ -118,6 +126,17 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
             }
             save_file = os.path.join(options['save_folder'], '{}_best.pth'.format(options['model']))
             print('saving the best model!')
+            torch.save(state, save_file)
+
+        if epoch % options['save_freq'] == 0:
+            state = {
+                'epoch': epoch,
+                'model': s_net.state_dict(),
+                'best_acc': best_acc,
+                'optimizer': optimizer.state_dict(),
+            }
+            save_file = os.path.join(options['save_folder'], '{}_{}.pth'.format(options['model'], epoch))
+            print('Frequently saving the best model!')
             torch.save(state, save_file)
 
 
@@ -212,6 +231,57 @@ if __name__ == '__main__':
         s_net.path = -1
 
         t_net = vanilla_cifar100_resnet32(pretrained=True)
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=100)
+
+        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
+
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'resnet56':
+        block_settings = [
+            # c, n, s, f
+            [16, 5, 1, 2],
+            [32, 5, 2, 2],
+            [64, 5, 2, 2]
+        ]
+        s_net = cifar100_resnet56(block_settings=block_settings)
+        s_net.path = -1
+
+        t_net = vanilla_cifar100_resnet56(pretrained=True)
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=100)
+
+        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
+
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'mobilenetv2':
+        modified_residual_setting = [
+            [
+                [1, 16, 1, 1],
+                [6, 16, 2, 1],
+                [6, 24, 3, 2],
+                [6, 40, 4, 2],
+                [6, 64, 3, 1],
+                [6, 112, 3, 2],
+                [6, 240, 1, 1],
+            ],
+            [
+                [1, 16, 1, 1],
+                [6, 16, 2, 1],
+                [6, 24, 3, 2],
+                [6, 40, 4, 2],
+                [6, 64, 3, 1],
+                [6, 112, 3, 2],
+                [6, 240, 1, 1],
+            ],
+        ]
+        meeting_point = [False, True, True, False, True, False, True]
+
+        s_net = cifar100_mobilenetv2_x1_0(modified_residual_setting=modified_residual_setting, meeting_point=meeting_point)
+
+        t_net = vanilla_cifar100_mobilenetv2_x1_0(pretrained=True)
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
