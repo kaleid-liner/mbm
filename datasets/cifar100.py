@@ -50,4 +50,4 @@ def get_cifar100_dataloaders(batch_size=128, num_workers=8, is_instance=False, d
         sampler=test_sampler,
     )
 
-    return train_loader, test_loader
+    return train_loader, test_loader, train_sampler, test_sampler

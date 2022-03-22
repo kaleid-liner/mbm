@@ -12,7 +12,6 @@ class AverageMeter(object):
 
     def reset(self):
         self.val = 0
-        self.avg = 0
         self.sum = 0
         self.count = 0
 
@@ -20,15 +19,16 @@ class AverageMeter(object):
         self.val = val
         self.sum += val * n
         self.count += n
-        self.avg = self.sum / self.count
 
     def synchronize_between_processes(self):
         t = reduce_across_processes([self.count, self.sum])
         t = t.tolist()
-        self.count = int([t[0]])
+        self.count = int(t[0])
         self.sum = t[1]
-        self.avg = self.sum / self.count
 
+    @property
+    def avg(self):
+        return self.sum / self.count
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""

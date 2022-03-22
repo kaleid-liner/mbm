@@ -176,7 +176,7 @@ if __name__ == '__main__':
     if options['dataset'] == 'imagenet':
         train_loader, val_loader, train_sampler, test_sampler = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'], num_workers=options['workers'], distributed=options['distributed'])
     elif options['dataset'] == 'cifar100':
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'], num_workers=options['workers'])
+        train_loader, val_loader, train_sampler, test_sampler = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'], num_workers=options['workers'], distributed=options['distributed'])
 
     if options['model'] == 'efficientnet':
         t_net = vanilla_efficientnet_b3(pretrained=True)
