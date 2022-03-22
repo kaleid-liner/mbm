@@ -1,2 +1,4 @@
 python train_imagenet.py --num_gpu 4 --distill --save_folder ./save/efficientnet/train_0 --model efficientnet --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC --better_cpu
 python train_imagenet.py --num_gpu 4 --distill --save_folder ./save/efficientnet/train_1 --model efficientnet --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC
+torchrun --nproc_per_node=8 distributed_train.py --save_folder ./save/resnet50/train_no_distill --model resnet50 --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC --batch_size 32 --weight_decay 0.00001
+torchrun --nproc_per_node=8 distributed_train.py --save_folder ./save/mobilenetv2/train_distill --model imagenet_mobilenetv2 --data_folder /data/workspace/wjiany/ILSVRC/Data/CLS-LOC --batch_size 32 --train_epoch 300 --learning_rate 0.045 --weight_decay 0.00004 --lr_step_size 1 --lr_gamma 0.98 --distill

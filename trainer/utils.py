@@ -2,6 +2,7 @@ import torch
 import time
 
 import numpy as np
+from distributed.utils import reduce_across_processes
 
 
 class AverageMeter(object):
@@ -19,6 +20,13 @@ class AverageMeter(object):
         self.val = val
         self.sum += val * n
         self.count += n
+        self.avg = self.sum / self.count
+
+    def synchronize_between_processes(self):
+        t = reduce_across_processes([self.count, self.sum])
+        t = t.tolist()
+        self.count = int([t[0]])
+        self.sum = t[1]
         self.avg = self.sum / self.count
 
 
@@ -71,6 +79,11 @@ def validate(val_loader, model, criterion, options):
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
+
+            batch_time.synchronize_between_processes()
+            losses.synchronize_between_processes()
+            top1.synchronize_between_processes()
+            top5.synchronize_between_processes()
 
             if idx % options['print_freq'] == 0:
                 print('Test: [{0}/{1}]\t'

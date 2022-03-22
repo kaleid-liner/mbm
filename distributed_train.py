@@ -12,11 +12,17 @@ from models.cifar_mobilenetv2 import cifar100_mobilenetv2_x1_0, cifar100_mobilen
 from models.shufflenetv2 import cifar100_shufflenetv2_x1_0, cifar100_shufflenetv2_x2_0
 from models.b3_shufflenetv2 import cifar100_shufflenetv2_x1_0 as b3_cifar100_shufflenetv2_x1_0
 from models.b4_shufflenetv2 import cifar100_shufflenetv2_x1_0 as b4_cifar100_shufflenetv2_x1_0
+from models.imagenet_resnet import resnet50
+from models.imagenet_mobilenetv2 import imagenet_mobilenetv2_x1_0
+from vanilla_models.imagenet_resnet import resnet50 as vanilla_resnet50
 from vanilla_models.shufflenet import cifar100_shufflenetv2_x1_0 as vanilla_cifar100_shufflenetv2_x1_0, cifar100_shufflenetv2_x2_0 as vanilla_cifar100_shufflenetv2_x2_0
 from vanilla_models.resnet import cifar100_resnet32 as vanilla_cifar100_resnet32, cifar100_resnet56 as vanilla_cifar100_resnet56
 from vanilla_models.efficientnet import efficientnet_b3 as vanilla_efficientnet_b3
 from vanilla_models.imagenet_shufflenetv2 import shufflenet_v2_x1_0
 from vanilla_models.mobilenetv2 import cifar100_mobilenetv2_x1_0 as vanilla_cifar100_mobilenetv2_x1_0, cifar100_mobilenetv2_x0_5 as vanilla_cifar100_mobilenetv2_x0_5
+from distributed.utils import init_distributed_mode, is_main_process
+
+from torchvision.models.mobilenetv2 import mobilenet_v2 as vanilla_imagenet_mobilenetv2
 
 import torch
 import torch.optim as optim
@@ -42,13 +48,19 @@ def parse_options():
     parser.add_argument('--lr_scheduler', type=str, default='step')
     parser.add_argument('--better_cpu', dest='better_cpu', action='store_true')
     parser.add_argument('--distill', dest='distill', action='store_true')
-    parser.add_argument('--num_gpu', type=int, default=1)
     parser.add_argument('--save_freq', type=int, default=30)
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--ckpt', type=str, default='')
+    parser.add_argument("--world_size", default=1, type=int, help="number of distributed processes")
+    parser.add_argument("--dataset", default='imagenet', type=str)
+    parser.add_argument("--workers", default=16, type=int, help="number of data loading workers (default: 16)")
+    parser.add_argument("--dist_url", default="env://", type=str, help="url used to set up distributed training")
+    parser.add_argument("--lr_step_size", default=30, type=int)
+    parser.add_argument("--lr_gamma", default=0.1, type=float)
 
     parser.set_defaults(distill=False)
     parser.set_defaults(better_cpu=False)
+
     return parser.parse_args()
 
 
@@ -61,16 +73,15 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
         state_dict = torch.load(options['ckpt'])
         s_net.load_state_dict(state_dict['model'])
 
-    if options['num_gpu'] > 1:
-        gpus = list(range(options['num_gpu']))
-        t_net = nn.DataParallel(t_net, gpus)
-        s_net = nn.DataParallel(s_net, gpus)
-        d_net = nn.DataParallel(d_net, gpus)
-
     criterion = criterion.cuda()
     t_net = t_net.cuda()
     s_net = s_net.cuda()
     d_net = d_net.cuda()
+
+    if options['distributed']:
+        t_net = nn.parallel.DistributedDataParallel(t_net, device_ids=[args.gpu])
+        s_net = nn.parallel.DistributedDataParallel(s_net, device_ids=[args.gpu])
+        d_net = nn.parallel.DistributedDataParallel(d_net, device_ids=[args.gpu])
 
     optimizer = optim.SGD(
         s_net.parameters(),
@@ -87,17 +98,18 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
     elif options['lr_scheduler'] == 'cosine':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
     elif options['lr_scheduler'] == 'step':
-        scheduler = optim.lr_scheduler.StepLR(optimizer, 30, 0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, options['lr_step_size'], options['lr_gamma'])
 
     # routine
     best_acc = 0
-    parallel = options['num_gpu'] > 1
     for epoch in range(1, epoch + 1):
         print("==> training...")
+        if options['distributed']:
+            train_sampler.set_epoch(epoch)
 
         time1 = time.time()
         if options['distill']:
-            train_acc, train_loss = train_distill(epoch, train_loader, d_net, optimizer, options, parallel)
+            train_acc, train_loss = train_distill(epoch, train_loader, d_net, optimizer, options, options['distributed'])
         else:
             train_acc, train_loss = train_vanilla(epoch, train_loader, s_net, criterion, optimizer, options)
 
@@ -116,36 +128,38 @@ def train(s_net, options, train_loader, epoch, t_net, d_net):
         else:
             scheduler.step()
 
-        logger.log_value('test_acc', test_acc, epoch)
-        logger.log_value('test_acc_top5', test_acc_top5, epoch)
-        logger.log_value('test_loss', test_loss, epoch)
+        if is_main_process():
+            logger.log_value('test_acc', test_acc, epoch)
+            logger.log_value('test_acc_top5', test_acc_top5, epoch)
+            logger.log_value('test_loss', test_loss, epoch)
 
-        if test_acc > best_acc:
-            best_acc = test_acc
-            state = {
-                'epoch': epoch,
-                'model': s_net.state_dict(),
-                'best_acc': best_acc,
-                'optimizer': optimizer.state_dict(),
-            }
-            save_file = os.path.join(options['save_folder'], '{}_best.pth'.format(options['model']))
-            print('saving the best model!')
-            torch.save(state, save_file)
+            if test_acc > best_acc:
+                best_acc = test_acc
+                state = {
+                    'epoch': epoch,
+                    'model': s_net.state_dict(),
+                    'best_acc': best_acc,
+                    'optimizer': optimizer.state_dict(),
+                }
+                save_file = os.path.join(options['save_folder'], '{}_best.pth'.format(options['model']))
+                print('saving the best model!')
+                torch.save(state, save_file)
 
-        if epoch % options['save_freq'] == 0:
-            state = {
-                'epoch': epoch,
-                'model': s_net.state_dict(),
-                'best_acc': best_acc,
-                'optimizer': optimizer.state_dict(),
-            }
-            save_file = os.path.join(options['save_folder'], '{}_{}.pth'.format(options['model'], epoch))
-            print('Frequently saving the best model!')
-            torch.save(state, save_file)
+            if epoch % options['save_freq'] == 0:
+                state = {
+                    'epoch': epoch,
+                    'model': s_net.state_dict(),
+                    'best_acc': best_acc,
+                    'optimizer': optimizer.state_dict(),
+                }
+                save_file = os.path.join(options['save_folder'], '{}_{}.pth'.format(options['model'], epoch))
+                print('Frequently saving the best model!')
+                torch.save(state, save_file)
 
 
 if __name__ == '__main__':
-    options = vars(parse_options())
+    args = parse_options()
+    options = vars(args)
     model_path = os.path.join(options['save_folder'], 'model')
     tb_path = os.path.join(options['save_folder'], 'tensorboards')
     os.makedirs(model_path, exist_ok=True)
@@ -156,8 +170,13 @@ if __name__ == '__main__':
         'save_folder': model_path,
     })
 
-    if options['num_gpu'] == 1:
-        torch.cuda.set_device(options['gpu'])
+    init_distributed_mode(args)
+    options = vars(args)
+
+    if options['dataset'] == 'imagenet':
+        train_loader, val_loader, train_sampler, test_sampler = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'], num_workers=options['workers'], distributed=options['distributed'])
+    elif options['dataset'] == 'cifar100':
+        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'], num_workers=options['workers'])
 
     if options['model'] == 'efficientnet':
         t_net = vanilla_efficientnet_b3(pretrained=True)
@@ -206,8 +225,6 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=1000)
 
-        train_loader, val_loader = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'])
-
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
     elif options['model'] == 'shufflenetv2':
@@ -219,8 +236,6 @@ if __name__ == '__main__':
         )
 
         d_net = WSLDistiller(t_net, s_net, num_classes=1000)
-
-        train_loader, val_loader = get_imagenet_dataloaders(data_folder=options['data_folder'], batch_size=options['batch_size'])
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
@@ -234,8 +249,6 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'])
-
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
     elif options['model'] == 'cifar100_shufflenetv2_x2':
@@ -247,8 +260,6 @@ if __name__ == '__main__':
         )
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
-
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'])
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
@@ -263,8 +274,6 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'])
-
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
     elif options['model'] == 'b4_shufflenetv2':
@@ -277,8 +286,6 @@ if __name__ == '__main__':
         )
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
-
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data', batch_size=options['batch_size'])
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
@@ -296,8 +303,6 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
-
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
     elif options['model'] == 'resnet56':
@@ -313,8 +318,6 @@ if __name__ == '__main__':
         t_net = vanilla_cifar100_resnet56(pretrained=True)
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
-
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
@@ -347,8 +350,6 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
-
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
 
     elif options['model'] == 'mobilenetv2_x0_5':
@@ -380,6 +381,44 @@ if __name__ == '__main__':
 
         d_net = WSLDistiller(t_net, s_net, num_classes=100)
 
-        train_loader, val_loader = get_cifar100_dataloaders(data_folder='./data')
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'resnet50':
+        s_net = resnet50()
+
+        t_net = vanilla_resnet50(pretrained=True)
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=1000)
+
+        train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)
+
+    elif options['model'] == 'imagenet_mobilenetv2':
+        modified_residual_setting = [
+            [
+                [1, 16, 1, 1],
+                [6, 16, 2, 2],
+                [6, 24, 3, 2],
+                [6, 40, 4, 2],
+                [6, 64, 3, 1],
+                [6, 112, 3, 2],
+                [6, 240, 1, 1],
+            ],
+            [
+                [1, 16, 1, 1],
+                [6, 16, 2, 2],
+                [6, 24, 3, 2],
+                [6, 40, 4, 2],
+                [6, 64, 3, 1],
+                [6, 112, 3, 2],
+                [6, 240, 1, 1],
+            ],
+        ]
+        meeting_point = [True, True, True, False, True, False, True]
+
+        s_net = imagenet_mobilenetv2_x1_0(modified_residual_setting=modified_residual_setting, meeting_point=meeting_point)
+
+        t_net = vanilla_imagenet_mobilenetv2(pretrained=True)
+
+        d_net = WSLDistiller(t_net, s_net, num_classes=1000)
 
         train(s_net, options, train_loader, options['train_epoch'], t_net, d_net)

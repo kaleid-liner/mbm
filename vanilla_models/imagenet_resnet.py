@@ -11,11 +11,11 @@ __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
 
 
 model_urls = {
-    'resnet18': 'https://download.pytorch.org/models/resnet18-f37072fd.pth',
-    'resnet34': 'https://download.pytorch.org/models/resnet34-b627a593.pth',
-    'resnet50': 'https://download.pytorch.org/models/resnet50-0676ba61.pth',
-    'resnet101': 'https://download.pytorch.org/models/resnet101-63fe2227.pth',
-    'resnet152': 'https://download.pytorch.org/models/resnet152-394f9c45.pth',
+    'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+    'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+    'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+    'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+    'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
     'resnext50_32x4d': 'https://download.pytorch.org/models/resnext50_32x4d-7cdf4587.pth',
     'resnext101_32x8d': 'https://download.pytorch.org/models/resnext101_32x8d-8ba56ff5.pth',
     'wide_resnet50_2': 'https://download.pytorch.org/models/wide_resnet50_2-95faca4d.pth',
@@ -175,56 +175,13 @@ class ResNet(nn.Module):
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1_1 = self._make_layer(block, 64, layers[0])
-        self.inplanes = 64
-        self.layer1_2 = self._make_layer(block, 64, layers[0])
-        self.downsample1_1 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.downsample1_2 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.layer2_1 = self._make_layer(block, 128, layers[1], stride=2,
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
                                        dilate=replace_stride_with_dilation[0])
-        self.inplanes = 64 * block.expansion
-        self.layer2_2 = self._make_layer(block, 128, layers[1], stride=2,
-                                       dilate=replace_stride_with_dilation[0])
-        self.downsample2_1 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.downsample2_2 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.layer3_1 = self._make_layer(block, 256, layers[2], stride=2,
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
                                        dilate=replace_stride_with_dilation[1])
-        self.inplanes = 128 * block.expansion
-        self.layer3_2 = self._make_layer(block, 256, layers[2], stride=2,
-                                       dilate=replace_stride_with_dilation[1])
-        self.downsample3_1 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.downsample3_2 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.layer4_1 = self._make_layer(block, 512, layers[3], stride=2,
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
                                        dilate=replace_stride_with_dilation[2])
-        self.inplanes = 256 * block.expansion
-        self.layer4_2 = self._make_layer(block, 512, layers[3], stride=2,
-                                       dilate=replace_stride_with_dilation[2])
-        self.downsample4_1 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
-        self.downsample4_2 = nn.Sequential(
-            conv1x1(self.inplanes, self.inplanes // 2),
-            self._norm_layer(self.inplanes // 2)
-        )
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(512 * block.expansion, num_classes)
 
@@ -277,26 +234,10 @@ class ResNet(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        x1 = self.layer1_1(x)
-        x1 = self.downsample1_1(x1)
-        x2 = self.layer1_2(x)
-        x2 = self.downsample1_2(x2)
-        x = torch.cat([x1, x2], 1)
-        x1 = self.layer2_1(x)
-        x1 = self.downsample2_1(x1)
-        x2 = self.layer2_2(x)
-        x2 = self.downsample2_2(x2)
-        x = torch.cat([x1, x2], 1)
-        x1 = self.layer3_1(x)
-        x1 = self.downsample3_1(x1)
-        x2 = self.layer3_2(x)
-        x2 = self.downsample3_2(x2)
-        x = torch.cat([x1, x2], 1)
-        x1 = self.layer4_1(x)
-        x1 = self.downsample4_1(x1)
-        x2 = self.layer4_2(x)
-        x2 = self.downsample4_2(x2)
-        x = torch.cat([x1, x2], 1)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
@@ -344,7 +285,7 @@ def resnet34(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> 
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    return _resnet('resnet34', BasicBlock, [2, 2, 4, 2], pretrained, progress,
+    return _resnet('resnet34', BasicBlock, [3, 4, 6, 3], pretrained, progress,
                    **kwargs)
 
 
@@ -356,9 +297,7 @@ def resnet50(pretrained: bool = False, progress: bool = True, **kwargs: Any) -> 
         pretrained (bool): If True, returns a model pre-trained on ImageNet
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    # return _resnet('resnet50', Bottleneck, [3, 4, 6, 3], pretrained, progress,
-    #                **kwargs)
-    return _resnet('resnet50', Bottleneck, [2, 2, 4, 2], pretrained, progress,
+    return _resnet('resnet50', Bottleneck, [3, 4, 6, 3], pretrained, progress,
                    **kwargs)
 
 

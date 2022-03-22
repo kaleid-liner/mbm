@@ -5,7 +5,7 @@ from typing import Any, Callable, Optional, List, Sequence
 
 import torch
 from torch import nn, Tensor
-from torchvision.models.utils import load_state_dict_from_url
+from torch.hub import load_state_dict_from_url
 
 from .utils import _make_divisible, StochasticDepth
 from .layers import ConvBNActivation, SqueezeExcitation
